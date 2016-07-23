@@ -1,5 +1,7 @@
 (ns foam.core)
 
+(def ^{:dynamic true :private true} *parent* nil)
+
 (defprotocol IDisplayName
   (display-name [this]))
 
@@ -265,24 +267,46 @@
     (swap! (:state this) assoc-in ks val))
   ReactRender
   (react-render [this]
-    (let [c (foam.core/children this)
-          ret (cond
-                (satisfies? IRender c) (render c)
-                (satisfies? IRenderState c) (render-state c (get-state this))
-                :else c)
-          ret (if (-children ret)
-                (update-in ret [:children] (fn [children]
-                                             (map (fn [c]
-                                                    (cond
-                                                      (satisfies? ReactRender c) (react-render c)
-                                                      (satisfies? ReactDOMRender c) c
-                                                      :else (assert false))) children)))
-                ret)]
-      (assert (valid-dom-tree? ret))
-      ret)))
+    (binding [*parent* this]
+      (let [c (foam.core/children this)
+            ret (cond
+                  (satisfies? IRender c) (render c)
+                  (satisfies? IRenderState c) (render-state c (get-state this))
+                  :else c)
+            ret (if (-children ret)
+                  (update-in ret [:children] (fn [children]
+                                               (map (fn [c]
+                                                      (cond
+                                                        (satisfies? ReactRender c) (react-render c)
+                                                        (satisfies? ReactDOMRender c) c
+                                                        :else (assert false))) children)))
+                  ret)]
+        (assert (valid-dom-tree? ret))
+        ret))))
 
 (defn component? [x]
   (instance? OmComponent x))
+
+
+(defn get-shared
+  "Takes an owner and returns a map of global shared values for a
+   render loop. An optional key or sequence of keys may be given to
+   extract a specific value."
+  ([owner]
+    {:pre [(component? owner)]}
+    (when-not (nil? owner)
+      (get owner :shared)))
+  ([owner korks]
+    {:pre [(component? owner)]}
+    (cond
+      (not (sequential? korks))
+      (get (get-shared owner) korks)
+
+      (empty? korks)
+      (get-shared owner)
+
+      :else
+      (get-in (get-shared owner) korks))))
 
 (defn valid-opts? [m]
   (every? #{:key :react-key :key-fn :fn :init-state :state
@@ -310,7 +334,8 @@
          com (cond
                (nil? m)
                (map->OmComponent {:cursor cursor
-                                  :children create-om-child})
+                                    :shared (get-shared *parent*)
+                                    :children create-om-child})
 
                :else
                (let [{:keys [key key-fn state init-state opts]} m
@@ -325,9 +350,11 @@
                                (not (nil? key-fn)) (key-fn cursor')
                                :else (get m :react-key))
                      _ (assert (or (nil? state) (map? state)))
-                     state (atom state)]
+                     state (atom state)
+                     shared  (or (:shared m) (get-shared *parent*))]
                  (map->OmComponent {:cursor cursor'
                                     :state state
+                                    :shared shared
                                     :key (or rkey nil) ;; annoying
                                     :children create-om-child})))]
      (set-init-state! com)
@@ -429,3 +456,4 @@
   ([owner node]
    ;; not sure it makes sense for foam to support this. Certainly DOM methods won't work on the node
    ))
+
